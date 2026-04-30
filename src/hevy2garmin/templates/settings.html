@@ -172,9 +172,20 @@
             </label>
         </div>
         <p class="section-description">
-            When you start a <strong>Strength Training</strong> activity on your Garmin watch at the gym, hevy2garmin will detect it and push your Hevy exercise data into that activity instead of creating a new one.
-            You get 1-second HR sampling, training effect, EPOC, and recovery data. If no matching watch activity is found, it falls back to the normal upload.
+            When you start a <strong>Strength Training</strong> activity on your Garmin watch at the gym, hevy2garmin will detect it, copy its per-second heart rate into a fresh FIT with your Hevy exercises (so exercise names render correctly), upload that, and remove the original watch activity. Training Effect / EPOC are recomputed from the same HR data.
+            If no matching watch activity is found, it falls back to the normal upload.
         </p>
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border);">
+            <div style="font-size: 13px; color: var(--text-secondary);">
+                Delete the original watch activity after replacing it
+                <div class="form-hint" style="margin-top: 4px;">Recommended ON. Turn OFF to leave both activities and use Garmin's "Merge Activities" UI manually.</div>
+            </div>
+            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; flex-shrink: 0; margin-left: 16px;">
+                <input type="hidden" name="merge_delete_original" value="off">
+                <input type="checkbox" name="merge_delete_original" value="on" {{ 'checked' if config.get('merge_delete_original', True) }} style="width: 18px; height: 18px; accent-color: var(--accent);">
+                <span style="font-size: 13px; color: var(--text-secondary);">Enabled</span>
+            </label>
+        </div>
     </div>
 
     <!-- Activity Description Section -->
