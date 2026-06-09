@@ -8,6 +8,7 @@ from __future__ import annotations
 import io
 import logging
 import time
+import zipfile
 from pathlib import Path
 
 from garminconnect import Garmin
@@ -114,7 +115,11 @@ def find_activity_by_start_time(
     target_start: str,
     window_minutes: int = 10,
 ) -> int | None:
-    """Find a Garmin activity matching a start time within a window."""
+    """Find a Garmin activity matching a start time within a window.
+
+    Searches by date range so old uploaded workouts are found regardless of
+    how many newer activities exist on the account.
+    """
     from datetime import datetime, timedelta
 
     try:
@@ -122,8 +127,13 @@ def find_activity_by_start_time(
     except (ValueError, TypeError):
         return None
 
+    # Search the workout's date ±1 day to handle timezone edge cases
+    target_naive = target.replace(tzinfo=None) if target.tzinfo else target
+    date_from = (target_naive - timedelta(days=1)).date().isoformat()
+    date_to = (target_naive + timedelta(days=1)).date().isoformat()
+
     try:
-        activities = _limiter.call(client.get_activities, 0, 10)
+        activities = _limiter.call(client.get_activities_by_date, date_from, date_to)
     except Exception:
         return None
 
@@ -139,8 +149,6 @@ def find_activity_by_start_time(
             if "T" not in act_start_str:
                 act_start_str = act_start_str.replace(" ", "T")
             act_start = datetime.fromisoformat(act_start_str)
-            # Both should be UTC now, compare naive
-            target_naive = target.replace(tzinfo=None) if target.tzinfo else target
             act_naive = act_start.replace(tzinfo=None) if act_start.tzinfo else act_start
             if abs((act_naive - target_naive).total_seconds()) < window_minutes * 60:
                 return act.get("activityId")
@@ -278,25 +286,44 @@ def find_matching_garmin_activity(
     return best
 
 
-def get_activity_exercise_sets(client: Garmin, activity_id: int) -> dict:
-    """GET exercise sets for a Garmin activity (for backup before merge)."""
-    time.sleep(1.0)
-    return client.get_activity_exercise_sets(activity_id)
+def download_activity_fit(client: Garmin, activity_id: int) -> bytes:
+    """Download an activity's original FIT file and return its raw bytes.
 
-
-def push_exercise_sets(client: Garmin, activity_id: int, payload: dict) -> None:
-    """PUT exercise sets to an existing Garmin activity.
-
-    Uses the undocumented /activity-service/activity/{id}/exerciseSets endpoint.
-    Atomically replaces ALL exercise sets on the activity.
-
-    Note: called directly (not through _limiter) because the endpoint returns
-    204 No Content which the rate limiter misinterprets as an error.
+    Garmin returns the ORIGINAL format as a ZIP wrapping one or more files;
+    we pick the first .fit member.
     """
-    url = f"/activity-service/activity/{activity_id}/exerciseSets"
-    time.sleep(1.0)  # manual rate limit
-    client.client.request("PUT", "connectapi", url, json=payload)
-    logger.info("  Pushed %d exercise sets to activity %s", len(payload.get("exerciseSets", [])), activity_id)
+    from garminconnect import Garmin as _G
+    zip_bytes = _limiter.call(
+        client.download_activity, str(activity_id), _G.ActivityDownloadFormat.ORIGINAL
+    )
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        for name in zf.namelist():
+            if name.lower().endswith(".fit"):
+                return zf.read(name)
+    raise RuntimeError(f"No .fit file in download for activity {activity_id}")
+
+
+def extract_hr_samples(fit_bytes: bytes) -> list[int]:
+    """Walk a FIT file's records and collect heart_rate values from RecordMessages.
+
+    Returns a list of bpm ints in record order; empty list if the FIT has no HR.
+    """
+    from fit_tool.fit_file import FitFile
+    from fit_tool.profile.messages.record_message import RecordMessage
+
+    fit_file = FitFile.from_bytes(fit_bytes, check_crc=False)
+    samples: list[int] = []
+    for record in fit_file.records:
+        msg = record.message
+        if isinstance(msg, RecordMessage) and msg.heart_rate is not None:
+            samples.append(int(msg.heart_rate))
+    return samples
+
+
+def delete_activity(client: Garmin, activity_id: int) -> None:
+    """Delete a Garmin activity by ID."""
+    _limiter.call(client.delete_activity, str(activity_id))
+    logger.info("  Deleted activity %s", activity_id)
 
 
 def generate_description(workout: dict, calories: int | None = None, avg_hr: int | None = None) -> str:
